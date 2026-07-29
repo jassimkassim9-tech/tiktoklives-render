@@ -1,0 +1,9 @@
+yt-dlp
+gspread
+oauth2client
+pyrogram
+TgCrypto
+flask
+google-api-python-client
+streamlink
+requests
