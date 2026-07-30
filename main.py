@@ -129,13 +129,10 @@ def get_from_sheets():
 # المعالجة والرفع (تعمل في الخلفية)
 # ═══════════════════════════════════════════════════════════
 def remux_to_mp4(ts_path: str, mp4_path: str) -> bool:
-    # فلتر التثبيت لمنع التجمد عند تغير شكل البث (Battle-Safe)
-    vf_fix = "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black"
+    # استخدام أمر Copy لنسخ الفيديو والصوت بدون إعادة معالجة (لا يستهلك الرام)
     cmd = [
         'ffmpeg', '-y', '-i', ts_path,
-        '-vf', vf_fix,
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
-        '-c:a', 'copy', '-movflags', '+faststart', mp4_path
+        '-c', 'copy', '-movflags', '+faststart', mp4_path
     ]
     try:
         result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1200)
