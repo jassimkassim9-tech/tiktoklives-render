@@ -55,16 +55,16 @@ from pyrogram import Client
 # ═══════════════════════════════════════════════════════════
 # الإعدادات الأساسية
 # ═══════════════════════════════════════════════════════════
-API_ID                  = int(os.environ.get("API_ID", "0"))
-API_HASH                = os.environ.get("API_HASH", "")
-BOT_TOKEN               = os.environ.get("BOT_TOKEN", "")
-CHAT_ID                 = int(os.environ.get("CHAT_ID", "0"))
-REFRESH_INTERVAL        = 120          
-RECORD_DURATION_MINUTES = 15           # المدة المطلوبة 15 دقيقة
-MAX_FILE_SIZE           = 1.9 * 1024 * 1024 * 1024
-MAX_UPLOAD_RETRIES      = 3
-STORAGE_LIMIT_GB        = 10.0
-RECORDINGS_DIR          = "/tmp/recordings"
+API_ID                 = int(os.environ.get("API_ID", "0"))
+API_HASH               = os.environ.get("API_HASH", "")
+BOT_TOKEN              = os.environ.get("BOT_TOKEN", "")
+CHAT_ID                = int(os.environ.get("CHAT_ID", "0"))
+REFRESH_INTERVAL       = 120          
+RECORD_DURATION_MINUTES = 15            # المدة المطلوبة 15 دقيقة
+MAX_FILE_SIZE          = 1.9 * 1024 * 1024 * 1024
+MAX_UPLOAD_RETRIES     = 3
+STORAGE_LIMIT_GB       = 10.0
+RECORDINGS_DIR         = "/tmp/recordings"
 
 app = Client("Arkaiva_Session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 active_monitors = {}
@@ -174,7 +174,13 @@ def process_and_upload_task(raw_file, mp4_file, username, ts, user_dir):
 # ═══════════════════════════════════════════════════════════
 def record_stream(username: str, raw_file: str, stop_event: threading.Event):
     tiktok_url = f"https://www.tiktok.com/@{username}/live"
-    cmd = ['streamlink', '--hls-live-restart', '--stream-segment-timeout', '30', tiktok_url, 'best,720p,480p', '-o', raw_file]
+    cmd = [
+        'streamlink', 
+        '--http-header', 'User-Agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        '--hls-live-restart', 
+        '--stream-segment-timeout', '30', 
+        tiktok_url, 'best,720p,480p', '-o', raw_file
+    ]
     
     process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     start_t = time.time()
@@ -200,11 +206,17 @@ def monitor(username: str, stop_event: threading.Event):
         try:
             # فحص البث
             is_live = False
-            with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+            ydl_opts = {
+                'quiet': True,
+                'impersonate': 'chrome'  # إضافة محاكاة متصفح كروم لتخطي الحظر
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 try:
                     info = ydl.extract_info(tiktok_url, download=False)
                     is_live = info.get('url') is not None
-                except: is_live = False
+                except Exception as e:
+                    print(f"⚠️ Error checking live status for @{username}: {e}")
+                    is_live = False
 
             if not is_live:
                 is_already_live = False
