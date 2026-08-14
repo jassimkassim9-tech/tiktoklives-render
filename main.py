@@ -204,24 +204,25 @@ def monitor(username: str, stop_event: threading.Event):
             time.sleep(random.randint(5, 45))
         
         try:
-            # فحص البث
+            # فحص البث باستخدام streamlink بدلاً من yt-dlp لتجاوز مشكلة المحاكاة
             is_live = False
-            ydl_opts = {
-                'quiet': True,
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.5',
-                    'Sec-Fetch-Mode': 'navigate'
-                }
-            }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            check_cmd = [
+                'streamlink', 
+                '--http-header', 'User-Agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                '--json', 
+                tiktok_url
+            ]
+            
+            result = subprocess.run(check_cmd, capture_output=True, text=True, timeout=45)
+            
+            # تحليل النتيجة: إذا وجدت مسارات بث (streams)، فالحساب لايف
+            if result.returncode == 0 and result.stdout.strip():
                 try:
-                    info = ydl.extract_info(tiktok_url, download=False)
-                    is_live = info.get('url') is not None
-                except Exception as e:
-                    print(f"⚠️ Error checking live status for @{username}: {e}")
-                    is_live = False
+                    output = json.loads(result.stdout)
+                    if "streams" in output and len(output["streams"]) > 0:
+                        is_live = True
+                except json.JSONDecodeError:
+                    pass
 
             if not is_live:
                 is_already_live = False
