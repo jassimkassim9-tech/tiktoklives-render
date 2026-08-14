@@ -161,7 +161,10 @@ def process_and_upload_task(raw_file, mp4_file, username, ts, user_dir):
             print(f"🔄 Processing previous part for @{username}...")
             if remux_to_mp4(raw_file, mp4_file):
                 os.remove(raw_file)
-                # رفع الملف (أو تقسيمه إذا تجاوز 2 جيجا)
+                file_size_mb = os.path.getsize(mp4_file) / (1024 * 1024)
+                print(f"✅ Remux successful for @{username}. Size: {file_size_mb:.2f} MB. Starting upload...")
+                
+                # رفع الملف (أو تقسيمه إذا تجاوز الحد)
                 if os.path.getsize(mp4_file) <= MAX_FILE_SIZE:
                     asyncio.run_coroutine_threadsafe(upload_video_with_retry(mp4_file, f"📹 @{username}"), loop)
                 else:
@@ -169,7 +172,7 @@ def process_and_upload_task(raw_file, mp4_file, username, ts, user_dir):
             else:
                 if os.path.exists(raw_file): os.remove(raw_file)
     except Exception as e:
-        print(f"⚠️  Background task error @{username}: {e}")
+        print(f"⚠️ Background task error @{username}: {e}")
 
 # ═══════════════════════════════════════════════════════════
 # التسجيل والمراقبة المتواصلة
