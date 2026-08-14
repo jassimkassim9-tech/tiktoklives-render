@@ -142,10 +142,13 @@ def remux_to_mp4(ts_path: str, mp4_path: str) -> bool:
 async def upload_video_with_retry(path: str, caption: str):
     for attempt in range(1, MAX_UPLOAD_RETRIES + 1):
         try:
+            print("Attempting to send to Telegram Bot...")
             await app.send_video(chat_id=CHAT_ID, video=path, caption=caption, supports_streaming=True)
+            print("Sent successfully!")
             if os.path.exists(path): os.remove(path)
             return True
         except Exception as e:
+            print(f"Failed to send to Telegram: {e}")
             print(f"⚠️  Upload failed (attempt {attempt}): {e}")
             await asyncio.sleep(20)
     if os.path.exists(path): os.remove(path)
@@ -162,7 +165,6 @@ def process_and_upload_task(raw_file, mp4_file, username, ts, user_dir):
                 if os.path.getsize(mp4_file) <= MAX_FILE_SIZE:
                     asyncio.run_coroutine_threadsafe(upload_video_with_retry(mp4_file, f"📹 @{username}"), loop)
                 else:
-                    # منطق التقسيم البسيط يمكن إضافته هنا إذا لزم الأمر
                     os.remove(mp4_file)
             else:
                 if os.path.exists(raw_file): os.remove(raw_file)
@@ -204,7 +206,7 @@ def monitor(username: str, stop_event: threading.Event):
             time.sleep(random.randint(5, 45))
         
         try:
-            # فحص البث باستخدام streamlink بدلاً من yt-dlp لتجاوز مشكلة المحاكاة
+            # فحص البث باستخدام streamlink في وضع JSON
             is_live = False
             check_cmd = [
                 'streamlink', 
@@ -215,7 +217,6 @@ def monitor(username: str, stop_event: threading.Event):
             
             result = subprocess.run(check_cmd, capture_output=True, text=True, timeout=45)
             
-            # تحليل النتيجة: إذا وجدت مسارات بث (streams)، فالحساب لايف
             if result.returncode == 0 and result.stdout.strip():
                 try:
                     output = json.loads(result.stdout)
@@ -237,8 +238,18 @@ def monitor(username: str, stop_event: threading.Event):
             raw_file = os.path.join(user_dir, f"{username}_{ts}_raw.ts")
             mp4_file = os.path.join(user_dir, f"{username}_{ts}.mp4")
 
-            # التسجيل (يحجز الكود هنا لمدة 15 دقيقة)
-            record_stream(username, raw_file, stop_event)
+            try:
+                # التسجيل (يحجز الكود هنا لمدة 15 دقيقة)
+                record_stream(username, raw_file, stop_event)
+                print("Recording finished successfully. File should be saved.")
+            except Exception as e:
+                print(f"Error during recording: {e}")
+
+            # التحقق من وجود الملف وحجمه
+            if os.path.exists(raw_file):
+                print(f"File found! Size: {os.path.getsize(raw_file) / 1024 / 1024:.2f} MB")
+            else:
+                print("File was not created!")
 
             # فور انتهاء التسجيل، نطلق "خيط" للمعالجة والرفع ونعود فوراً لبداية الـ while
             threading.Thread(
