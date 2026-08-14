@@ -7,3 +7,4 @@ flask
 google-api-python-client
 streamlink
 requests
+curl_cffi
