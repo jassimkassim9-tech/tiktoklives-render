@@ -35,7 +35,7 @@ def home():
 def run_server():
     flask_app.run(host='0.0.0.0', port=7860)
 
-Thread(target=run_server, daemon=True).start()
+# Thread(target=run_server, daemon=True).start()
 
 # إعداد Loop لـ Asyncio
 if sys.platform == 'win32':
@@ -292,9 +292,14 @@ def sync_monitors():
 async def main():
     os.makedirs(RECORDINGS_DIR, exist_ok=True)
     await app.start()
-    print("🤖 Bot is Online & Ready.")
+    print("🤖 Bot is Online & Ready on GitHub Actions.")
     threading.Thread(target=sync_monitors, daemon=True).start()
-    while True: await asyncio.sleep(3600)
+    
+    # السكربت سيعمل لمدة 5 ساعات و 30 دقيقة ثم يتوقف بسلام
+    await asyncio.sleep(5.5 * 3600)
+    
+    print("🛑 Time limit reached. Stopping gracefully for the next Cron job...")
+    await app.stop()
 
 if __name__ == "__main__":
     try: loop.run_until_complete(main())
