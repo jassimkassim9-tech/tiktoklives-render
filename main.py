@@ -328,7 +328,7 @@ async def main():
     
     # فحص مستمر للوقت كل دقيقة بدلاً من النوم المتواصل
     while time.time() - start_time < max_duration:
-        utc_now = datetime.datetime.utcnow()
+        utc_now = datetime.datetime.now(datetime.UTC)
         baghdad_time = utc_now + datetime.timedelta(hours=3)
         
         # إذا دخلنا في وقت الاستراحة (بين 7:00 و 9:00 صباحاً بتوقيت بغداد)، نخرج من المراقبة
@@ -342,7 +342,7 @@ async def main():
     await app.stop()
 
     # بعد الإيقاف، نقرر: هل نمرر المهمة أم ننام؟
-    utc_now = datetime.datetime.utcnow()
+    utc_now = datetime.datetime.now(datetime.UTC)
     baghdad_time = utc_now + datetime.timedelta(hours=3)
     
     print(f"🕒 Current Baghdad Time: {baghdad_time.strftime('%H:%M:%S')}")
