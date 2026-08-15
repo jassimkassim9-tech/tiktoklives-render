@@ -2,11 +2,9 @@ name: TikTok Recorder Bot
 
 on:
   schedule:
-    # تداخل لمدة 3 دقائق فقط لتجنب المقاطع المكررة الطويلة
-    - cron: '0 6 * * *'    # الدورة الأولى: تبدأ 9:00 صباحاً
-    - cron: '27 11 * * *'  # الدورة الثانية: تبدأ 2:27 ظهراً (تتداخل 3 دقائق مع نهاية الأولى)
-    - cron: '54 16 * * *'  # الدورة الثالثة: تبدأ 7:54 مساءً (تتداخل 3 دقائق مع الثانية)
-    - cron: '21 22 * * *'  # الدورة الرابعة: تبدأ 1:21 ليلاً (تتداخل 3 دقائق مع الثالثة)
+    # لم نعد نحتاج لتوقيتات معقدة! توقيت واحد فقط لإيقاظ البوت بعد الاستراحة
+    # هذا التوقيت يعادل الساعة 9:00 صباحاً بتوقيت بغداد
+    - cron: '0 6 * * *'
   workflow_dispatch:
 
 jobs:
@@ -28,14 +26,25 @@ jobs:
           sudo apt-get install -y ffmpeg
 
       - name: Install Python Libraries
-        run: |
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
 
-      - name: Run Bot
+      - name: Run Bot and Relay
         env:
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
-        run: python main.py
+          GH_TOKEN: ${{ secrets.GH_PAT }}  # الرمز السري الجديد الذي أضفناه
+        run: |
+          set +e # لمنع توقف الخادم بشكل خاطئ
+          python main.py
+          EXIT_CODE=$?
+          
+          # إذا كان كود الخروج هو 42، فهذا يعني أن البوت يطلب إطلاق الخادم الذي يليه
+          if [ $EXIT_CODE -eq 42 ]; then
+            echo "🚀 Launching the next server immediately with ZERO delay..."
+            gh workflow run bot.yml --ref main
+          else
+            echo "💤 Entering break mode until 9:00 AM."
+          fi
