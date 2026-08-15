@@ -130,15 +130,42 @@ def get_from_sheets():
 # المعالجة والرفع (تعمل في الخلفية)
 # ═══════════════════════════════════════════════════════════
 def remux_to_mp4(ts_path: str, mp4_path: str) -> bool:
-    # استخدام أمر Copy لنسخ الفيديو والصوت بدون إعادة معالجة (لا يستهلك الرام)
-    cmd = [
-        'ffmpeg', '-y', '-i', ts_path,
-        '-c', 'copy', '-movflags', '+faststart', mp4_path
+    # المحاولة الأولى: نسخ سريع مع إصلاح الأخطاء (بدون إعادة ترميز - سريع جدًا)
+    cmd_copy = [
+        'ffmpeg', '-y', 
+        '-err_detect', 'ignore_err', # تجاهل الأخطاء البسيطة
+        '-i', ts_path,
+        '-c', 'copy', 
+        '-bsf:a', 'aac_adtstoasc', # إصلاح مسار الصوت (مهم جدًا لملفات TS)
+        '-movflags', '+faststart', 
+        mp4_path
     ]
+    
+    # المحاولة الثانية: إعادة ترميز كاملة (إذا فشل النسخ السريع أو كان الملف تالفًا)
+    cmd_reencode = [
+        'ffmpeg', '-y', 
+        '-err_detect', 'ignore_err',
+        '-i', ts_path,
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', # إعادة ترميز الصورة بسرعة فائقة
+        '-c:a', 'aac', 
+        '-movflags', '+faststart', 
+        mp4_path
+    ]
+
     try:
-        result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1200)
-        return result.returncode == 0 and os.path.exists(mp4_path)
-    except: return False
+        # نجرب النسخ السريع أولاً
+        result = subprocess.run(cmd_copy, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1200)
+        
+        if result.returncode != 0 or not os.path.exists(mp4_path) or os.path.getsize(mp4_path) < 1000:
+            print(f"⚠️ Fast remux failed or file too small. Trying re-encoding...")
+            # إذا فشل، أو كان الملف الناتج صغيرًا جدًا (دليل على تلف)، نقوم بإعادة الترميز
+            if os.path.exists(mp4_path): os.remove(mp4_path)
+            subprocess.run(cmd_reencode, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2400)
+            
+        return os.path.exists(mp4_path) and os.path.getsize(mp4_path) > 1000
+    except Exception as e:
+        print(f"Error in remux_to_mp4: {e}")
+        return False
 
 async def upload_video_with_retry(path: str, caption: str):
     for attempt in range(1, MAX_UPLOAD_RETRIES + 1):
@@ -185,7 +212,7 @@ def record_stream(username: str, raw_file: str, stop_event: threading.Event):
         '--http-header', 'User-Agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         '--hls-live-restart', 
         '--stream-segment-timeout', '30', 
-        tiktok_url, 'best,720p,480p', '-o', raw_file
+        tiktok_url, '720p,best', '-o', raw_file
     ]
     
     process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
