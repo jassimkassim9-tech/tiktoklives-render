@@ -2,14 +2,18 @@ name: TikTok Recorder Bot
 
 on:
   schedule:
-    # لم نعد نحتاج لتوقيتات معقدة! توقيت واحد فقط لإيقاظ البوت بعد الاستراحة
-    # هذا التوقيت يعادل الساعة 9:00 صباحاً بتوقيت بغداد
     - cron: '0 6 * * *'
   workflow_dispatch:
+
+# هذه الأسطر الجديدة هي شرطي المرور الذي يمنع التكرار
+concurrency:
+  group: bot-runner
+  cancel-in-progress: true
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+# ... (باقي الكود كما هو بدون تغيير)
 
     steps:
       - name: Checkout Code
