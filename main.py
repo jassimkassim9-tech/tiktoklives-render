@@ -234,7 +234,7 @@ def monitor(username: str, stop_event: threading.Event):
                 time.sleep(60)
                 continue
 
-            print(f"🔴 Live now: @{username}. Starting 15-min segment...")
+            print(f"🔴 Live now: @{username}. Starting {RECORD_DURATION_MINUTES}-min segment...")
             is_already_live = True
             if not is_storage_safe(): emergency_cleanup()
 
@@ -296,26 +296,39 @@ async def main():
     print("🤖 Bot is Online & Ready on GitHub Actions.")
     threading.Thread(target=sync_monitors, daemon=True).start()
     
-    # السكربت سيعمل لمدة 5 ساعات و 30 دقيقة ثم يتوقف
-    await asyncio.sleep(5.5 * 3600)
+    start_time = time.time()
+    max_duration = 5.5 * 3600  # 5 ساعات ونصف كحد أقصى
     
-    print("🛑 Time limit reached. Stopping gracefully...")
+    # فحص مستمر للوقت كل دقيقة بدلاً من النوم المتواصل
+    while time.time() - start_time < max_duration:
+        utc_now = datetime.datetime.utcnow()
+        baghdad_time = utc_now + datetime.timedelta(hours=3)
+        
+        # إذا دخلنا في وقت الاستراحة (بين 7:00 و 9:00 صباحاً بتوقيت بغداد)، نخرج من المراقبة
+        if 7 <= baghdad_time.hour < 9:
+            print("☕ Break time reached! Stopping early.")
+            break
+            
+        await asyncio.sleep(60)  # يفحص الوقت كل 60 ثانية
+    
+    print("🛑 Stopping gracefully...")
     await app.stop()
 
-    # جلب الوقت الحالي وتعديله ليطابق توقيت العاصمة بغداد (UTC + 3)
+    # بعد الإيقاف، نقرر: هل نمرر المهمة أم ننام؟
     utc_now = datetime.datetime.utcnow()
     baghdad_time = utc_now + datetime.timedelta(hours=3)
     
     print(f"🕒 Current Baghdad Time: {baghdad_time.strftime('%H:%M:%S')}")
 
-    # إذا كان الوقت بين 6:30 صباحاً و 8:50 صباحاً بتوقيت بغداد، نأخذ استراحة
-    if 6 <= baghdad_time.hour < 9:
-        print("☕ Time for morning break. Will NOT trigger the next run. See you at 9:00 AM!")
-        sys.exit(0) # خروج طبيعي، لا تشغل السيرفر القادم
+    if 7 <= baghdad_time.hour < 9:
+        print("💤 Entering break mode. See you at 9:00 AM!")
+        sys.exit(0)  # خروج طبيعي، لا تشغل السيرفر القادم
     else:
         print("🔄 Triggering the next relay run instantly...")
         sys.exit(42) # كود خروج سري يخبر سيرفرات جيت هاب بإطلاق السيرفر القادم فوراً
 
 if __name__ == "__main__":
-    try: loop.run_until_complete(main())
-    except KeyboardInterrupt: pass
+    try: 
+        loop.run_until_complete(main())
+    except KeyboardInterrupt: 
+        pass
