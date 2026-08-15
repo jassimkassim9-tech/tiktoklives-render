@@ -130,41 +130,59 @@ def get_from_sheets():
 # المعالجة والرفع (تعمل في الخلفية)
 # ═══════════════════════════════════════════════════════════
 def remux_to_mp4(ts_path: str, mp4_path: str) -> bool:
-    # المحاولة الأولى: نسخ سريع مع إصلاح الأخطاء (بدون إعادة ترميز - سريع جدًا)
-    cmd_copy = [
+    print(f"🛠️ Starting rigorous remux for {os.path.basename(ts_path)}")
+    
+    # 1. محاولة النسخ مع إعادة بناء الطوابع الزمنية (Timestamps)
+    cmd_fast = [
         'ffmpeg', '-y', 
-        '-err_detect', 'ignore_err', # تجاهل الأخطاء البسيطة
+        '-err_detect', 'ignore_err',
+        '-fflags', '+genpts+igndts', # توليد طوابع زمنية جديدة وتجاهل القديمة
+        '-async', '1',               # مزامنة الصوت مع الفيديو
         '-i', ts_path,
         '-c', 'copy', 
-        '-bsf:a', 'aac_adtstoasc', # إصلاح مسار الصوت (مهم جدًا لملفات TS)
+        '-bsf:a', 'aac_adtstoasc', 
         '-movflags', '+faststart', 
         mp4_path
     ]
     
-    # المحاولة الثانية: إعادة ترميز كاملة (إذا فشل النسخ السريع أو كان الملف تالفًا)
+    # 2. محاولة إعادة الترميز الكامل (Re-encode) كحل أخير إذا كان الملف معطوباً
     cmd_reencode = [
         'ffmpeg', '-y', 
         '-err_detect', 'ignore_err',
         '-i', ts_path,
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', # إعادة ترميز الصورة بسرعة فائقة
+        '-c:v', 'libx264', 
+        '-preset', 'veryfast', # توازن بين السرعة واستهلاك الموارد
+        '-crf', '28',          # جودة مقبولة
         '-c:a', 'aac', 
+        '-b:a', '128k',
         '-movflags', '+faststart', 
         mp4_path
     ]
 
     try:
-        # نجرب النسخ السريع أولاً
-        result = subprocess.run(cmd_copy, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1200)
+        print("▶️ Attempting fast remux with timestamp regeneration...")
+        result = subprocess.run(cmd_fast, capture_output=True, timeout=1200)
         
-        if result.returncode != 0 or not os.path.exists(mp4_path) or os.path.getsize(mp4_path) < 1000:
-            print(f"⚠️ Fast remux failed or file too small. Trying re-encoding...")
-            # إذا فشل، أو كان الملف الناتج صغيرًا جدًا (دليل على تلف)، نقوم بإعادة الترميز
-            if os.path.exists(mp4_path): os.remove(mp4_path)
-            subprocess.run(cmd_reencode, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2400)
+        # التحقق من نجاح العملية وحجم الملف الناتج (أكثر من 500 كيلوبايت)
+        if result.returncode == 0 and os.path.exists(mp4_path) and os.path.getsize(mp4_path) > 1024 * 500:
+            print(f"✅ Fast remux successful.")
+            return True
             
-        return os.path.exists(mp4_path) and os.path.getsize(mp4_path) > 1000
+        print("⚠️ Fast remux failed or file too small. Proceeding with full RE-ENCODE...")
+        if os.path.exists(mp4_path): os.remove(mp4_path)
+        
+        print("▶️ Attempting full re-encode...")
+        result_reencode = subprocess.run(cmd_reencode, capture_output=True, timeout=2400)
+        
+        if result_reencode.returncode == 0 and os.path.exists(mp4_path) and os.path.getsize(mp4_path) > 1024 * 500:
+            print(f"✅ Re-encode successful.")
+            return True
+            
+        print("❌ Both fast remux and re-encode failed.")
+        return False
+        
     except Exception as e:
-        print(f"Error in remux_to_mp4: {e}")
+        print(f"❌ Error in remux_to_mp4: {e}")
         return False
 
 async def upload_video_with_retry(path: str, caption: str):
@@ -211,9 +229,13 @@ def record_stream(username: str, raw_file: str, stop_event: threading.Event):
         'streamlink', 
         '--http-header', 'User-Agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         '--hls-live-restart', 
-        '--stream-segment-timeout', '30', 
-        tiktok_url, '720p,best', '-o', raw_file
+        '--stream-segment-timeout', '30',
+        '--hls-live-edge', '3', # تقليل التأخير لتجنب الانقطاعات
+        '--retry-streams', '1', # إعادة المحاولة بسرعة
+        '--retry-max', '3',
+        tiktok_url, '720p,720p60,best', '-o', raw_file # محاولة إجبار دقة ثابتة
     ]
+    # ... باقي الكود يبقى كما هو
     
     process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     start_t = time.time()
