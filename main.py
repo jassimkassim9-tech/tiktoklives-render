@@ -9,6 +9,7 @@ import subprocess
 import traceback
 import json
 import logging
+import datetime
 from flask import Flask, send_file
 from threading import Thread
 
@@ -59,7 +60,7 @@ API_ID                 = int(os.environ.get("API_ID", "0"))
 API_HASH               = os.environ.get("API_HASH", "")
 BOT_TOKEN              = os.environ.get("BOT_TOKEN", "")
 CHAT_ID                = int(os.environ.get("CHAT_ID", "0"))
-REFRESH_INTERVAL       = 120          
+REFRESH_INTERVAL       = 120         
 RECORD_DURATION_MINUTES = 15            # المدة المطلوبة 15 دقيقة
 MAX_FILE_SIZE          = 1.9 * 1024 * 1024 * 1024
 MAX_UPLOAD_RETRIES     = 3
@@ -295,11 +296,25 @@ async def main():
     print("🤖 Bot is Online & Ready on GitHub Actions.")
     threading.Thread(target=sync_monitors, daemon=True).start()
     
-    # السكربت سيعمل لمدة 5 ساعات و 30 دقيقة ثم يتوقف بسلام
+    # السكربت سيعمل لمدة 5 ساعات و 30 دقيقة ثم يتوقف
     await asyncio.sleep(5.5 * 3600)
     
-    print("🛑 Time limit reached. Stopping gracefully for the next Cron job...")
+    print("🛑 Time limit reached. Stopping gracefully...")
     await app.stop()
+
+    # جلب الوقت الحالي وتعديله ليطابق توقيت العاصمة بغداد (UTC + 3)
+    utc_now = datetime.datetime.utcnow()
+    baghdad_time = utc_now + datetime.timedelta(hours=3)
+    
+    print(f"🕒 Current Baghdad Time: {baghdad_time.strftime('%H:%M:%S')}")
+
+    # إذا كان الوقت بين 6:30 صباحاً و 8:50 صباحاً بتوقيت بغداد، نأخذ استراحة
+    if 6 <= baghdad_time.hour < 9:
+        print("☕ Time for morning break. Will NOT trigger the next run. See you at 9:00 AM!")
+        sys.exit(0) # خروج طبيعي، لا تشغل السيرفر القادم
+    else:
+        print("🔄 Triggering the next relay run instantly...")
+        sys.exit(42) # كود خروج سري يخبر سيرفرات جيت هاب بإطلاق السيرفر القادم فوراً
 
 if __name__ == "__main__":
     try: loop.run_until_complete(main())
