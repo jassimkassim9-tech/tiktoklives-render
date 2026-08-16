@@ -42,12 +42,12 @@ BOT_TOKEN              = os.environ.get("BOT_TOKEN", "")
 CHAT_ID                = int(os.environ.get("CHAT_ID", "0"))
 REFRESH_INTERVAL       = 120         
 RECORD_DURATION_MINUTES = 15            
-MAX_FILE_SIZE          = 1.9 * 1024 * 1024 * 1024
+MAX_FILE_SIZE          = 1.9 * 1024 * 1024 * 1024 # 1.9 GB بفضل Pyrogram
 MAX_UPLOAD_RETRIES     = 3
 STORAGE_LIMIT_GB       = 10.0
 RECORDINGS_DIR         = "/tmp/recordings"
 
-# المتغيرات العامة (بدون تعريف app هنا)
+# المتغيرات العامة
 app = None 
 active_monitors = {}
 upload_queue = None
@@ -102,36 +102,29 @@ def get_from_sheets():
 
 async def remux_to_mp4(ts_path: str, mp4_path: str) -> bool:
     print(f"🛠️ Fixing and remuxing {os.path.basename(ts_path)}")
-    
-    # أمر نظيف وخفيف جداً: مجرد نسخ سريع بدون فلاتر تستهلك المعالج
     cmd_fast = [
         'ffmpeg', '-y', '-err_detect', 'ignore_err',
         '-fflags', '+genpts',
-        '-i', ts_path, 
-        '-c', 'copy', 
-        '-bsf:a', 'aac_adtstoasc', 
+        '-i', ts_path, '-c', 'copy', '-bsf:a', 'aac_adtstoasc', 
         mp4_path
     ]
-    
     try:
         process = await asyncio.create_subprocess_exec(
             *cmd_fast, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
         )
         
-        # ننتظر 5 دقائق كحد أقصى (النسخ السريع جداً للملفات الكبيرة يأخذ ثواني)
         await asyncio.wait_for(process.communicate(), timeout=300)
         
-        if process.returncode == 0 and os.path.exists(mp4_path) and os.path.getsize(mp4_path) > 1024 * 500:
+        # قللنا حجم الفحص إلى 10 كيلوبايت، حتى لو كان المقطع قصيراً جداً سيعتبر ناجحاً
+        if process.returncode == 0 and os.path.exists(mp4_path) and os.path.getsize(mp4_path) > 1024 * 10:
             print(f"✅ Remux successful.")
             return True
-        else:
-            print(f"⚠️ Remux failed. Code: {process.returncode}")
-            return False
             
+        print(f"⚠️ Remux failed or file too small. Code: {process.returncode}")
+        return False
     except asyncio.TimeoutError:
         print(f"❌ Timeout! ffmpeg got stuck on {os.path.basename(ts_path)}")
-        if process:
-            process.kill()
+        if process: process.kill()
         return False
     except Exception as e:
         print(f"❌ Error in remux_to_mp4: {e}")
@@ -144,7 +137,6 @@ async def upload_video_with_retry(path: str, caption: str):
     for attempt in range(1, MAX_UPLOAD_RETRIES + 1):
         try:
             print(f"🚀 Attempting to send to Telegram (Attempt {attempt})...")
-            # إرسال الفيديو 
             await app.send_video(chat_id=CHAT_ID, video=path, caption=caption, supports_streaming=True)
             print(f"✅ Sent successfully: {caption}")
             if os.path.exists(path): os.remove(path)
@@ -168,7 +160,7 @@ async def upload_worker():
             await asyncio.sleep(5)
 
 # ═══════════════════════════════════════════════════════════
-# المراقبة والتسجيل (تحولت إلى دوال Async)
+# المراقبة والتسجيل
 # ═══════════════════════════════════════════════════════════
 async def record_stream_async(username: str, raw_file: str, stop_event: asyncio.Event):
     tiktok_url = f"https://www.tiktok.com/@{username}/live"
@@ -193,7 +185,13 @@ async def record_stream_async(username: str, raw_file: str, stop_event: asyncio.
         
     if process.returncode is None:
         process.terminate()
-        await process.wait()
+        try:
+            # ننتظر 5 ثوانٍ ليتوقف بهدوء
+            await asyncio.wait_for(process.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            # رصاصة الرحمة: إذا عاند ولم يتوقف، نقتله فوراً لننتقل للرفع
+            process.kill()
+            await process.wait()
 
 async def monitor_async(username: str, stop_event: asyncio.Event):
     tiktok_url = f"https://www.tiktok.com/@{username}/live"
@@ -241,20 +239,24 @@ async def monitor_async(username: str, stop_event: asyncio.Event):
             except: pass
 
             # معالجة الملف بعد التسجيل
-            if os.path.exists(raw_file) and os.path.getsize(raw_file) > 10000:
-                print(f"🔄 Processing previous part for @{username}...")
-                remux_success = await remux_to_mp4(raw_file, mp4_file)
-                final_file = mp4_file if remux_success else raw_file
-                
-                if final_file == mp4_file and os.path.exists(raw_file):
+            if os.path.exists(raw_file):
+                # إذا كان البث قصيراً جداً أو معطوباً (أقل من 50 كيلو بايت)، تجاهله تماماً
+                if os.path.getsize(raw_file) < 1024 * 50:
+                    print(f"⚠️ Skipping upload for @{username}: Stream was too short or empty.")
                     os.remove(raw_file)
-                    
-                if os.path.getsize(final_file) <= MAX_FILE_SIZE:
-                    caption = f"📹 @{username}"
-                    await upload_queue.put((final_file, caption))
-                    print(f"📥 Added {os.path.basename(final_file)} to upload queue.")
                 else:
-                    os.remove(final_file)
+                    print(f"🔄 Processing previous part for @{username}...")
+                    remux_success = await remux_to_mp4(raw_file, mp4_file)
+                    
+                    if remux_success:
+                        if os.path.exists(raw_file): os.remove(raw_file)
+                        caption = f"📹 @{username}"
+                        await upload_queue.put((mp4_file, caption))
+                        print(f"📥 Added {os.path.basename(mp4_file)} to upload queue.")
+                    else:
+                        print(f"⚠️ Skipping upload for @{username}: Remux failed.")
+                        if os.path.exists(raw_file): os.remove(raw_file)
+                        if os.path.exists(mp4_path): os.remove(mp4_path)
 
             await asyncio.sleep(1)
 
@@ -267,14 +269,12 @@ async def sync_monitors_async():
         if current_users is not None:
             running = set(active_monitors.keys())
             
-            # بدء مراقبة المستخدمين الجدد
             for u in current_users - running:
                 stop_evt = asyncio.Event()
                 task = asyncio.create_task(monitor_async(u, stop_evt))
                 active_monitors[u] = {"stop": stop_evt, "task": task}
                 print(f"👁️ Started monitoring: @{u}")
                 
-            # إيقاف المستخدمين المحذوفين
             for u in running - current_users:
                 active_monitors[u]["stop"].set()
                 active_monitors[u]["task"].cancel()
@@ -289,30 +289,23 @@ async def sync_monitors_async():
 async def main():
     global app, upload_queue
     
-    # تهيئة الطابور
     upload_queue = asyncio.Queue()
     
-    # تهيئة وبدء عميل التلغرام هنا (ليكون ضمن نفس الـ Event Loop)
+    # تهيئة وبدء عميل التلغرام
     app = Client("Arkaiva_Session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
     await app.start()
     print("🤖 Bot is Online & Ready on Render.")
     
-    # إنشاء مجلد التسجيلات
     os.makedirs(RECORDINGS_DIR, exist_ok=True)
     
-    # تشغيل مهام الخلفية المتزامنة
     asyncio.create_task(upload_worker())
     asyncio.create_task(sync_monitors_async())
     
-    # إبقاء السكربت يعمل
     while True:
         await asyncio.sleep(3600)
 
 if __name__ == "__main__":
-    # تشغيل واجهة ويب وهمية في Thread مستقل لإرضاء Render
     Thread(target=run_flask, daemon=True).start()
-    
-    # تشغيل التطبيق بالكامل باستخدام Asyncio
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
