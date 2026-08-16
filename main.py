@@ -102,22 +102,36 @@ def get_from_sheets():
 
 async def remux_to_mp4(ts_path: str, mp4_path: str) -> bool:
     print(f"🛠️ Fixing and remuxing {os.path.basename(ts_path)}")
+    
+    # أمر نظيف وخفيف جداً: مجرد نسخ سريع بدون فلاتر تستهلك المعالج
     cmd_fast = [
         'ffmpeg', '-y', '-err_detect', 'ignore_err',
-        '-fflags', '+genpts+igndts', '-async', '1',
-        '-i', ts_path, '-c', 'copy', '-bsf:a', 'aac_adtstoasc', 
-        '-movflags', '+faststart', mp4_path
+        '-fflags', '+genpts',
+        '-i', ts_path, 
+        '-c', 'copy', 
+        '-bsf:a', 'aac_adtstoasc', 
+        mp4_path
     ]
+    
     try:
-        # استخدام asyncio.create_subprocess_exec بدلاً من subprocess.run لتجنب تجميد الـ Loop
         process = await asyncio.create_subprocess_exec(
             *cmd_fast, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
         )
-        await asyncio.wait_for(process.communicate(), timeout=1200)
+        
+        # ننتظر 5 دقائق كحد أقصى (النسخ السريع جداً للملفات الكبيرة يأخذ ثواني)
+        await asyncio.wait_for(process.communicate(), timeout=300)
         
         if process.returncode == 0 and os.path.exists(mp4_path) and os.path.getsize(mp4_path) > 1024 * 500:
             print(f"✅ Remux successful.")
             return True
+        else:
+            print(f"⚠️ Remux failed. Code: {process.returncode}")
+            return False
+            
+    except asyncio.TimeoutError:
+        print(f"❌ Timeout! ffmpeg got stuck on {os.path.basename(ts_path)}")
+        if process:
+            process.kill()
         return False
     except Exception as e:
         print(f"❌ Error in remux_to_mp4: {e}")
