@@ -32,7 +32,6 @@ def home():
     return "✅ TikTok DVR Bot is Running 24/7 on Render!"
 
 def run_flask():
-    # Render تستخدم المنفذ 10000 افتراضياً
     port = int(os.environ.get("PORT", 10000))
     app_flask.run(host='0.0.0.0', port=port)
 
@@ -53,7 +52,11 @@ RECORDINGS_DIR         = "/tmp/recordings"
 app = Client("Arkaiva_Session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 active_monitors = {}
 monitors_lock   = threading.Lock()
+upload_queue    = None  # سيتم تعريفه داخل دالة main
 
+# ═══════════════════════════════════════════════════════════
+# دوال المساعدة
+# ═══════════════════════════════════════════════════════════
 def get_user_dir(username: str) -> str:
     user_dir = os.path.join(RECORDINGS_DIR, username)
     os.makedirs(user_dir, exist_ok=True)
@@ -101,7 +104,6 @@ def get_from_sheets():
 
 def remux_to_mp4(ts_path: str, mp4_path: str) -> bool:
     print(f"🛠️ Fixing and remuxing {os.path.basename(ts_path)}")
-    # استخدام أمر خفيف جداً على الرام يصلح التجمّد فقط
     cmd_fast = [
         'ffmpeg', '-y', '-err_detect', 'ignore_err',
         '-fflags', '+genpts+igndts', '-async', '1',
@@ -118,37 +120,63 @@ def remux_to_mp4(ts_path: str, mp4_path: str) -> bool:
         print(f"❌ Error in remux_to_mp4: {e}")
         return False
 
+# ═══════════════════════════════════════════════════════════
+# نظام الرفع المطور (الطابور)
+# ═══════════════════════════════════════════════════════════
 async def upload_video_with_retry(path: str, caption: str):
     for attempt in range(1, MAX_UPLOAD_RETRIES + 1):
         try:
-            print("Attempting to send to Telegram...")
-            await app.send_video(chat_id=CHAT_ID, video=path, caption=caption, supports_streaming=True)
-            print("Sent successfully!")
+            print(f"🚀 Attempting to send to Telegram (Attempt {attempt})...")
+            # حد أقصى للرفع 15 دقيقة لتجنب التجمّد الصامت
+            await asyncio.wait_for(
+                app.send_video(chat_id=CHAT_ID, video=path, caption=caption, supports_streaming=True),
+                timeout=900 
+            )
+            print(f"✅ Sent successfully: {caption}")
             if os.path.exists(path): os.remove(path)
             return True
+        except asyncio.TimeoutError:
+            print(f"⚠️ Upload timed out (attempt {attempt})")
         except Exception as e:
             print(f"⚠️ Upload failed (attempt {attempt}): {e}")
-            await asyncio.sleep(20)
+        await asyncio.sleep(20)
+        
     if os.path.exists(path): os.remove(path)
     return False
+
+async def upload_worker():
+    """عامل التوصيل: يسحب الفيديوهات من الطابور ويرفعها واحداً تلو الآخر"""
+    while True:
+        try:
+            path, caption = await upload_queue.get()
+            print(f"📦 Upload worker picked up: {os.path.basename(path)}")
+            await upload_video_with_retry(path, caption)
+            upload_queue.task_done()
+        except Exception as e:
+            print(f"⚠️ Upload worker error: {e}")
 
 def process_and_upload_task(raw_file, mp4_file, username, ts, user_dir, loop):
     try:
         if os.path.exists(raw_file) and os.path.getsize(raw_file) > 10000:
             print(f"🔄 Processing previous part for @{username}...")
-            # إذا فشل التحويل إلى mp4، نرفع الملف الخام .ts مباشرة لتجنب ضياع البث
             final_file = mp4_file if remux_to_mp4(raw_file, mp4_file) else raw_file
             
             if final_file == mp4_file and os.path.exists(raw_file):
                 os.remove(raw_file)
                 
             if os.path.getsize(final_file) <= MAX_FILE_SIZE:
-                asyncio.run_coroutine_threadsafe(upload_video_with_retry(final_file, f"📹 @{username}"), loop)
+                # إرسال الملف إلى طابور الرفع بدلاً من رفعه مباشرة
+                caption = f"📹 @{username}"
+                loop.call_soon_threadsafe(upload_queue.put_nowait, (final_file, caption))
+                print(f"📥 Added {os.path.basename(final_file)} to upload queue.")
             else:
                 os.remove(final_file)
     except Exception as e:
         print(f"⚠️ Background task error @{username}: {e}")
 
+# ═══════════════════════════════════════════════════════════
+# المراقبة والتسجيل
+# ═══════════════════════════════════════════════════════════
 def record_stream(username: str, raw_file: str, stop_event: threading.Event):
     tiktok_url = f"https://www.tiktok.com/@{username}/live"
     cmd = [
@@ -235,6 +263,12 @@ def sync_monitors(loop):
         time.sleep(REFRESH_INTERVAL)
 
 async def main():
+    global upload_queue
+    upload_queue = asyncio.Queue()
+    
+    # تشغيل عامل الرفع في الخلفية
+    asyncio.create_task(upload_worker())
+    
     os.makedirs(RECORDINGS_DIR, exist_ok=True)
     await app.start()
     print("🤖 Bot is Online & Ready on Render.")
@@ -246,10 +280,7 @@ async def main():
         await asyncio.sleep(3600)
 
 if __name__ == "__main__":
-    # تشغيل خادم Flask لإرضاء Render
     threading.Thread(target=run_flask, daemon=True).start()
-    
-    # تشغيل البوت الأساسي
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
