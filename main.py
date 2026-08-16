@@ -4,12 +4,10 @@ import random
 import functools
 import asyncio
 import time
-import threading
 import subprocess
-import traceback
 import json
 import logging
-import datetime
+from threading import Thread
 from pyrogram import Client
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -21,7 +19,7 @@ sys.stdout.reconfigure(line_buffering=True)
 print = functools.partial(print, flush=True)
 
 # ═══════════════════════════════════════════════════════════
-# خادم Flask (لإرضاء Render وإبقاء البوت مستيقظاً)
+# خادم Flask (لإرضاء Render) - يعمل في Thread مستقل
 # ═══════════════════════════════════════════════════════════
 app_flask = Flask(__name__)
 log = logging.getLogger('werkzeug')
@@ -43,16 +41,16 @@ API_HASH               = os.environ.get("API_HASH", "")
 BOT_TOKEN              = os.environ.get("BOT_TOKEN", "")
 CHAT_ID                = int(os.environ.get("CHAT_ID", "0"))
 REFRESH_INTERVAL       = 120         
-RECORD_DURATION_MINUTES = 1            
+RECORD_DURATION_MINUTES = 15            
 MAX_FILE_SIZE          = 1.9 * 1024 * 1024 * 1024
 MAX_UPLOAD_RETRIES     = 3
 STORAGE_LIMIT_GB       = 10.0
 RECORDINGS_DIR         = "/tmp/recordings"
 
-app = Client("Arkaiva_Session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# المتغيرات العامة (بدون تعريف app هنا)
+app = None 
 active_monitors = {}
-monitors_lock   = threading.Lock()
-upload_queue    = None  # سيتم تعريفه داخل دالة main
+upload_queue = None
 
 # ═══════════════════════════════════════════════════════════
 # دوال المساعدة
@@ -102,7 +100,7 @@ def get_from_sheets():
         print(f"⚠️ Sheets error: {e}")
         return None
 
-def remux_to_mp4(ts_path: str, mp4_path: str) -> bool:
+async def remux_to_mp4(ts_path: str, mp4_path: str) -> bool:
     print(f"🛠️ Fixing and remuxing {os.path.basename(ts_path)}")
     cmd_fast = [
         'ffmpeg', '-y', '-err_detect', 'ignore_err',
@@ -111,8 +109,13 @@ def remux_to_mp4(ts_path: str, mp4_path: str) -> bool:
         '-movflags', '+faststart', mp4_path
     ]
     try:
-        result = subprocess.run(cmd_fast, capture_output=True, timeout=1200)
-        if result.returncode == 0 and os.path.exists(mp4_path) and os.path.getsize(mp4_path) > 1024 * 500:
+        # استخدام asyncio.create_subprocess_exec بدلاً من subprocess.run لتجنب تجميد الـ Loop
+        process = await asyncio.create_subprocess_exec(
+            *cmd_fast, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+        )
+        await asyncio.wait_for(process.communicate(), timeout=1200)
+        
+        if process.returncode == 0 and os.path.exists(mp4_path) and os.path.getsize(mp4_path) > 1024 * 500:
             print(f"✅ Remux successful.")
             return True
         return False
@@ -121,22 +124,17 @@ def remux_to_mp4(ts_path: str, mp4_path: str) -> bool:
         return False
 
 # ═══════════════════════════════════════════════════════════
-# نظام الرفع المطور (الطابور)
+# نظام الرفع (عامل التوصيل)
 # ═══════════════════════════════════════════════════════════
 async def upload_video_with_retry(path: str, caption: str):
     for attempt in range(1, MAX_UPLOAD_RETRIES + 1):
         try:
             print(f"🚀 Attempting to send to Telegram (Attempt {attempt})...")
-            # حد أقصى للرفع 15 دقيقة لتجنب التجمّد الصامت
-            await asyncio.wait_for(
-                app.send_video(chat_id=CHAT_ID, video=path, caption=caption, supports_streaming=True),
-                timeout=900 
-            )
+            # إرسال الفيديو 
+            await app.send_video(chat_id=CHAT_ID, video=path, caption=caption, supports_streaming=True)
             print(f"✅ Sent successfully: {caption}")
             if os.path.exists(path): os.remove(path)
             return True
-        except asyncio.TimeoutError:
-            print(f"⚠️ Upload timed out (attempt {attempt})")
         except Exception as e:
             print(f"⚠️ Upload failed (attempt {attempt}): {e}")
         await asyncio.sleep(20)
@@ -145,7 +143,6 @@ async def upload_video_with_retry(path: str, caption: str):
     return False
 
 async def upload_worker():
-    """عامل التوصيل: يسحب الفيديوهات من الطابور ويرفعها واحداً تلو الآخر"""
     while True:
         try:
             path, caption = await upload_queue.get()
@@ -154,30 +151,12 @@ async def upload_worker():
             upload_queue.task_done()
         except Exception as e:
             print(f"⚠️ Upload worker error: {e}")
-
-def process_and_upload_task(raw_file, mp4_file, username, ts, user_dir, loop):
-    try:
-        if os.path.exists(raw_file) and os.path.getsize(raw_file) > 10000:
-            print(f"🔄 Processing previous part for @{username}...")
-            final_file = mp4_file if remux_to_mp4(raw_file, mp4_file) else raw_file
-            
-            if final_file == mp4_file and os.path.exists(raw_file):
-                os.remove(raw_file)
-                
-            if os.path.getsize(final_file) <= MAX_FILE_SIZE:
-                # إرسال الملف إلى طابور الرفع بدلاً من رفعه مباشرة
-                caption = f"📹 @{username}"
-                loop.call_soon_threadsafe(upload_queue.put_nowait, (final_file, caption))
-                print(f"📥 Added {os.path.basename(final_file)} to upload queue.")
-            else:
-                os.remove(final_file)
-    except Exception as e:
-        print(f"⚠️ Background task error @{username}: {e}")
+            await asyncio.sleep(5)
 
 # ═══════════════════════════════════════════════════════════
-# المراقبة والتسجيل
+# المراقبة والتسجيل (تحولت إلى دوال Async)
 # ═══════════════════════════════════════════════════════════
-def record_stream(username: str, raw_file: str, stop_event: threading.Event):
+async def record_stream_async(username: str, raw_file: str, stop_event: asyncio.Event):
     tiktok_url = f"https://www.tiktok.com/@{username}/live"
     cmd = [
         'streamlink', 
@@ -186,23 +165,30 @@ def record_stream(username: str, raw_file: str, stop_event: threading.Event):
         '--hls-live-edge', '3', '--retry-streams', '1', '--retry-max', '3',
         tiktok_url, '720p,720p60,best', '-o', raw_file
     ]
-    process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    
+    process = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+    )
+    
     start_t = time.time()
     duration = RECORD_DURATION_MINUTES * 60
+    
     while not stop_event.is_set() and (time.time() - start_t) < duration:
-        if process.poll() is not None: break
-        time.sleep(5)
-    if process.poll() is None:
+        if process.returncode is not None: break
+        await asyncio.sleep(5)
+        
+    if process.returncode is None:
         process.terminate()
+        await process.wait()
 
-def monitor(username: str, stop_event: threading.Event, loop):
+async def monitor_async(username: str, stop_event: asyncio.Event):
     tiktok_url = f"https://www.tiktok.com/@{username}/live"
     user_dir = get_user_dir(username)
     is_already_live = False 
 
     while not stop_event.is_set():
         if not is_already_live:
-            time.sleep(random.randint(5, 45))
+            await asyncio.sleep(random.randint(5, 45))
         try:
             is_live = False
             check_cmd = [
@@ -210,17 +196,22 @@ def monitor(username: str, stop_event: threading.Event, loop):
                 '--http-header', 'User-Agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 '--json', tiktok_url
             ]
-            result = subprocess.run(check_cmd, capture_output=True, text=True, timeout=45)
-            if result.returncode == 0 and result.stdout.strip():
+            
+            process = await asyncio.create_subprocess_exec(
+                *check_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+            )
+            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=45)
+            
+            if process.returncode == 0 and stdout:
                 try:
-                    output = json.loads(result.stdout)
+                    output = json.loads(stdout.decode())
                     if "streams" in output and len(output["streams"]) > 0:
                         is_live = True
                 except json.JSONDecodeError: pass
 
             if not is_live:
                 is_already_live = False
-                time.sleep(60)
+                await asyncio.sleep(60)
                 continue
 
             print(f"🔴 Live now: @{username}. Starting {RECORD_DURATION_MINUTES}-min segment...")
@@ -232,57 +223,83 @@ def monitor(username: str, stop_event: threading.Event, loop):
             mp4_file = os.path.join(user_dir, f"{username}_{ts}.mp4")
 
             try:
-                record_stream(username, raw_file, stop_event)
+                await record_stream_async(username, raw_file, stop_event)
             except: pass
 
-            threading.Thread(
-                target=process_and_upload_task,
-                args=(raw_file, mp4_file, username, ts, user_dir, loop),
-                daemon=True
-            ).start()
-            time.sleep(1)
+            # معالجة الملف بعد التسجيل
+            if os.path.exists(raw_file) and os.path.getsize(raw_file) > 10000:
+                print(f"🔄 Processing previous part for @{username}...")
+                remux_success = await remux_to_mp4(raw_file, mp4_file)
+                final_file = mp4_file if remux_success else raw_file
+                
+                if final_file == mp4_file and os.path.exists(raw_file):
+                    os.remove(raw_file)
+                    
+                if os.path.getsize(final_file) <= MAX_FILE_SIZE:
+                    caption = f"📹 @{username}"
+                    await upload_queue.put((final_file, caption))
+                    print(f"📥 Added {os.path.basename(final_file)} to upload queue.")
+                else:
+                    os.remove(final_file)
 
-        except: time.sleep(10)
+            await asyncio.sleep(1)
 
-def sync_monitors(loop):
+        except Exception as e:
+            await asyncio.sleep(10)
+
+async def sync_monitors_async():
     while True:
         current_users = get_from_sheets()
         if current_users is not None:
-            with monitors_lock:
-                running = set(active_monitors.keys())
-                for u in current_users - running:
-                    stop_evt = threading.Event()
-                    t = threading.Thread(target=monitor, args=(u, stop_evt, loop), daemon=True)
-                    t.start()
-                    active_monitors[u] = {"stop": stop_evt}
-                    print(f"👁️ Started monitoring: @{u}")
-                for u in running - current_users:
-                    active_monitors[u]["stop"].set()
-                    del active_monitors[u]
-                    print(f"🛑 Stopped monitoring: @{u}")
-        time.sleep(REFRESH_INTERVAL)
+            running = set(active_monitors.keys())
+            
+            # بدء مراقبة المستخدمين الجدد
+            for u in current_users - running:
+                stop_evt = asyncio.Event()
+                task = asyncio.create_task(monitor_async(u, stop_evt))
+                active_monitors[u] = {"stop": stop_evt, "task": task}
+                print(f"👁️ Started monitoring: @{u}")
+                
+            # إيقاف المستخدمين المحذوفين
+            for u in running - current_users:
+                active_monitors[u]["stop"].set()
+                active_monitors[u]["task"].cancel()
+                del active_monitors[u]
+                print(f"🛑 Stopped monitoring: @{u}")
+                
+        await asyncio.sleep(REFRESH_INTERVAL)
 
+# ═══════════════════════════════════════════════════════════
+# التشغيل الأساسي
+# ═══════════════════════════════════════════════════════════
 async def main():
-    global upload_queue
+    global app, upload_queue
+    
+    # تهيئة الطابور
     upload_queue = asyncio.Queue()
     
-    # تشغيل عامل الرفع في الخلفية
-    asyncio.create_task(upload_worker())
-    
-    os.makedirs(RECORDINGS_DIR, exist_ok=True)
+    # تهيئة وبدء عميل التلغرام هنا (ليكون ضمن نفس الـ Event Loop)
+    app = Client("Arkaiva_Session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
     await app.start()
     print("🤖 Bot is Online & Ready on Render.")
     
-    loop = asyncio.get_running_loop()
-    threading.Thread(target=sync_monitors, args=(loop,), daemon=True).start()
+    # إنشاء مجلد التسجيلات
+    os.makedirs(RECORDINGS_DIR, exist_ok=True)
     
+    # تشغيل مهام الخلفية المتزامنة
+    asyncio.create_task(upload_worker())
+    asyncio.create_task(sync_monitors_async())
+    
+    # إبقاء السكربت يعمل
     while True:
         await asyncio.sleep(3600)
 
 if __name__ == "__main__":
-    threading.Thread(target=run_flask, daemon=True).start()
+    # تشغيل واجهة ويب وهمية في Thread مستقل لإرضاء Render
+    Thread(target=run_flask, daemon=True).start()
+    
+    # تشغيل التطبيق بالكامل باستخدام Asyncio
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(main())
-    except KeyboardInterrupt: pass
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
