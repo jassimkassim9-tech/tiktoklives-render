@@ -41,7 +41,7 @@ API_HASH               = os.environ.get("API_HASH", "")
 BOT_TOKEN              = os.environ.get("BOT_TOKEN", "")
 CHAT_ID                = int(os.environ.get("CHAT_ID", "0"))
 REFRESH_INTERVAL       = 120         
-RECORD_DURATION_MINUTES = 20            
+RECORD_DURATION_MINUTES = 15            
 MAX_FILE_SIZE          = 1.9 * 1024 * 1024 * 1024 # 1.9 GB بفضل Pyrogram
 MAX_UPLOAD_RETRIES     = 3
 STORAGE_LIMIT_GB       = 10.0
@@ -101,29 +101,23 @@ def get_from_sheets():
         return None
 
 async def remux_to_mp4(ts_path: str, mp4_path: str) -> bool:
-    print(f"🛠️ Fixing and remuxing {os.path.basename(ts_path)} (Handling Guests)")
-    
-    # أمر إعادة الترميز: يجبر الفيديو على أبعاد ثابتة ويضع خلفية سوداء حول القست
-    cmd_reencode = [
+    print(f"🛠️ Fixing and remuxing {os.path.basename(ts_path)}")
+    cmd_fast = [
         'ffmpeg', '-y', '-err_detect', 'ignore_err',
-        '-i', ts_path,
-        '-vf', 'scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2',
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '30',
-        '-c:a', 'copy', 
+        '-fflags', '+genpts',
+        '-i', ts_path, '-c', 'copy', '-bsf:a', 'aac_adtstoasc', 
         mp4_path
     ]
-    
     try:
-        # استخدمنا أمر الترميز الثقيل بدلاً من النسخ السريع
         process = await asyncio.create_subprocess_exec(
-            *cmd_reencode, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+            *cmd_fast, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
         )
         
-        # أعطيناه وقتاً أطول للتحويل (15 دقيقة) لأن توحيد الشاشة يستغرق وقتاً
-        await asyncio.wait_for(process.communicate(), timeout=900)
+        await asyncio.wait_for(process.communicate(), timeout=300)
         
+        # قللنا حجم الفحص إلى 10 كيلوبايت، حتى لو كان المقطع قصيراً جداً سيعتبر ناجحاً
         if process.returncode == 0 and os.path.exists(mp4_path) and os.path.getsize(mp4_path) > 1024 * 10:
-            print(f"✅ Remux successful (Re-encoded).")
+            print(f"✅ Remux successful.")
             return True
             
         print(f"⚠️ Remux failed or file too small. Code: {process.returncode}")
@@ -135,7 +129,6 @@ async def remux_to_mp4(ts_path: str, mp4_path: str) -> bool:
     except Exception as e:
         print(f"❌ Error in remux_to_mp4: {e}")
         return False
-
 
 # ═══════════════════════════════════════════════════════════
 # نظام الرفع (عامل التوصيل)
