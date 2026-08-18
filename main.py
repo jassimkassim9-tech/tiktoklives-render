@@ -101,23 +101,29 @@ def get_from_sheets():
         return None
 
 async def remux_to_mp4(ts_path: str, mp4_path: str) -> bool:
-    print(f"🛠️ Fixing and remuxing {os.path.basename(ts_path)}")
-    cmd_fast = [
+    print(f"🛠️ Fixing and remuxing {os.path.basename(ts_path)} (Handling Guests)")
+    
+    # أمر إعادة الترميز: يجبر الفيديو على أبعاد ثابتة ويضع خلفية سوداء حول القست
+    cmd_reencode = [
         'ffmpeg', '-y', '-err_detect', 'ignore_err',
-        '-fflags', '+genpts',
-        '-i', ts_path, '-c', 'copy', '-bsf:a', 'aac_adtstoasc', 
+        '-i', ts_path,
+        '-vf', 'scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2',
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '30',
+        '-c:a', 'copy', 
         mp4_path
     ]
+    
     try:
+        # استخدمنا أمر الترميز الثقيل بدلاً من النسخ السريع
         process = await asyncio.create_subprocess_exec(
-            *cmd_fast, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+            *cmd_reencode, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
         )
         
-        await asyncio.wait_for(process.communicate(), timeout=300)
+        # أعطيناه وقتاً أطول للتحويل (15 دقيقة) لأن توحيد الشاشة يستغرق وقتاً
+        await asyncio.wait_for(process.communicate(), timeout=900)
         
-        # قللنا حجم الفحص إلى 10 كيلوبايت، حتى لو كان المقطع قصيراً جداً سيعتبر ناجحاً
         if process.returncode == 0 and os.path.exists(mp4_path) and os.path.getsize(mp4_path) > 1024 * 10:
-            print(f"✅ Remux successful.")
+            print(f"✅ Remux successful (Re-encoded).")
             return True
             
         print(f"⚠️ Remux failed or file too small. Code: {process.returncode}")
@@ -129,6 +135,7 @@ async def remux_to_mp4(ts_path: str, mp4_path: str) -> bool:
     except Exception as e:
         print(f"❌ Error in remux_to_mp4: {e}")
         return False
+
 
 # ═══════════════════════════════════════════════════════════
 # نظام الرفع (عامل التوصيل)
